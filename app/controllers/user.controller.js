@@ -3,14 +3,18 @@ const UserModel = db.userModel;
 
 const functions = require("./functions.js");
 
-exports.signUp = (req, res) => {
+exports.signUp = async (req, res) => {
+    let encryptedPassword = await functions.hash(req.body.password, res);
+    if (!encryptedPassword) { return; }
+    
+    let dataBody = req.body;
     let newUser = UserModel({
         username: req.body.username,
-        password: req.body.password,
-        seller:   req.body.seller,
+        password: encryptedPassword,
+        seller:   dataBody.seller,
         deposit:  0
     });
-    newUser.save(newUser)
+    await newUser.save(newUser)
     .then(data => {
         res.json({ 
             message: "successfully created user",
@@ -24,65 +28,119 @@ exports.signUp = (req, res) => {
     });
 }
 
-exports.deposit = (req, res) => {
-    let reqId = req.params.id;
-    let type = req.body.type; //coin type: 2, 5, 10, 20, 50, or 100 cents
-    let quantity = req.body.quantity; //quantity of specified coin
+exports.deposit = async (req, res) => {
+    let user = await functions.authUser(req, res, false);
+    if (!user) { return; }
+
+    let dataBody = req.body.data ? req.body.data : {};
+    let type = dataBody.type;
+    let quantity = dataBody.quantity;
     if (!type || ![2, 5, 10, 20, 50, 100].includes(type)) {
         res.status(400).send({ 
-            message: "please specify a coin type: 2, 5, 10, 20, 50, or 100" 
+            message: "please specify a valid coin type: 2, 5, 10, 20, 50, or 100" 
         });
+        return;
     } else if (!quantity || quantity < 0) {
         res.status(400).send({ 
             message: "please specify coin quantity" 
         });
-    } else {
-        (async () => {
-            let data = await functions.findUserById(reqId, res);
-            if (data){
-                let newDeposit = { deposit: data.deposit + type * quantity };
-                UserModel.findByIdAndUpdate(reqId, newDeposit, {useFindAndModify: false})
-                .then(data => {
-                    res.send({
-                        message: `successfully deposited ${quantity} coins of ${type} cents to user ${reqId}`
-                    });
-                })
-                .catch(err => {
-                    res.status(500).send({
-                        message: `error updating deposit for user ${reqId}\n${err}`
-                    });
-                });
-            } else {
-                res.status(500).send({
-                    message: `no user by id ${reqId}`
-                });
-            }
-        })();
+        return;
     }
-}
 
-exports.resetDeposit = (req, res) => {
-    let reqId = req.params.id;
-    let resetDeposit = { deposit: 0 };
-    UserModel.findByIdAndUpdate(reqId, resetDeposit, {useFindAndModify: false})
+    let userId = user._id;
+    let newDeposit = { deposit: data.deposit + type * quantity };
+    await UserModel.findByIdAndUpdate(userId, newDeposit, {useFindAndModify: false})
     .then(data => {
-        if (data) {
-            res.send({
-                message: `successfully reset deposit of user ${reqId}`
-            });
-        } else {
-            res.status(404).send({
-                message: `could not reset deposit of user ${reqId}. perhaps not found`
-            });
-        }
+        res.send({
+            message: `successfully deposited ${quantity} coins of ${type} cents to user ${userId}`
+        });
     })
     .catch(err => {
         res.status(500).send({
-            message: `error resetting deposit for user ${reqId}:\n${err.message}`
+            message: `error updating deposit for user ${userId}\n${err}`
         });
     });
 }
 
-exports.buy = (req, res) => {
-    
+exports.resetDeposit = async (req, res) => {
+    let user = await functions.authUser(req, res, false);
+    if (!user) { return; }
+
+    let userId = user._id;
+    let resetDeposit = { deposit: 0 };
+    await UserModel.findByIdAndUpdate(userId, resetDeposit, {useFindAndModify: false})
+    .then(data => {
+        res.send({
+            message: `successfully reset deposit of user ${userId}`
+        });
+    })
+    .catch(err => {
+        res.status(500).send({
+            message: `error resetting deposit for user ${userId}:\n${err.message}`
+        });
+    });
+}
+
+exports.buy = async (req, res) => {
+    let user = await functions.authUser(req, res, false);
+    if (!user) { return; }
+
+    let productId = req.params.id;
+    let productToBuy = await functions.findProductById(productId);
+    if (!productToBuy) { return; }
+
+    let productCost = productToBuy.cost;
+    if (productCost > user.deposit) {
+        res.status(400).send({
+            message: "insufficent funds"
+        });
+        return;
+    }
+
+    if (productToBuy.amountAvailable <= 0) {
+        res.send({
+            message: "out of stock"
+        });
+        return;
+    }
+
+    //should be a mongoose transaction, so all operations are
+    //either fulfilled or aborted
+
+    //transfer funds to seller
+    let sellerId = productToBuy.sellerId;
+    let seller = await functions.findUserById(sellerId);
+    seller.deposit += productCost;
+    await seller.save(seller)
+    .then(async _ => {
+        //update product supply
+        productToBuy.amountAvailable -= 1;
+        await productToBuy.save(productToBuy)
+        .then(async _ => {
+            //update buyer deposit
+            let change = user.deposit - productCost;
+            user.deposit = change;
+            await user.save(user)
+            .then(_ => {
+                res.send({
+                    message:`successfully bought ${productToBuy.productName} for ${productCost} cents` + 
+                    `\nchange: ${functions.coinVal(change)}`
+                });
+            })
+            .catch(err => {
+                res.status(500).send({
+                    message: `error transfering funds from buyer ${user._id}`
+                });
+            });
+        }).catch(err => {
+            res.status(500).send({
+                message: `error updating product ${productId}`
+            });
+        });
+    })
+    .catch(err => {
+        res.status(500).send({
+            message: `error transfering funds to seller ${sellerId}`
+        });
+    });
 }
