@@ -1,8 +1,42 @@
 const db = require("../config/db.config.js");
-const bcrypt = require("bcrypt");
 
 const UserModel = db.userModel;
 const ProductModel = db.productModel;
+
+function authBodyOk(authBody, res) {
+    let ok = false;
+    if (!authBody) {
+        res.send({
+            message: "please specify an \"auth\" object with username and password fields"
+        });
+    } else {
+        if (!authBody.username) {
+            res.send({
+                message: "please specify a username field"
+            });
+        } else if (!authBody.password) {
+            res.send({
+                message: "please specify a password field"
+            });
+        }
+        else { ok = true; }
+    }
+
+    return ok;
+}
+
+exports.dataBodyOk = (dataBody, res=null) => {
+    if ( ! ( dataBody instanceof Object ) ) {
+        if (res != null) {
+            res.send({
+                message: "please specify a \"data\" object"
+            });
+        }
+        return false;
+    } 
+
+    return true;
+}
 
 exports.findUserById = async (reqId, res) => {
     let user = await UserModel.findById(reqId)
@@ -26,80 +60,55 @@ exports.findProductById = async (reqId, res) => {
     return user;
 }
 
-exports.authUser = async (req, res, seller=true) => {
-    let authBody = req.body.auth;
-    if (!authBody) {
-        res.status(400).send({
-            message: "please specify an auth body with a password and username field"
-        });
-        return;
-    } 
-    
-    let user = await UserModel.findOne({ 
-        username: authBody.username
-    })
+exports.authUser = async(authBody, authorizeSeller, res) => {
+    if (!authBodyOk) { return; }
+
+    let user = undefined;
+    await UserModel.findOne({ username: authBody.username })
     .catch(err => {
         res.status(500).send({
-            message: `error fetching user:\n${err}`
+            message: `error finding user by username:\n${err}`
         });
         return;
-    });
-
-    if (!user) {
-        res.status(400).send({
-            message: "user not found"
-        });
-    }
-    else {
-        let authorize = await bcrypt.compare(authBody.password, user.password)
-        .catch(err => {
-            res.status(500).send({
-                message: `bcrypt compare error:\n${err}`
+    })
+    .then(async data => {
+        if (!data) {
+            res.status(404).send({
+                message: `could not find user by username: ${authBody.username}`
             });
-        });
-        
-        if (authorize) {
-            if (user.seller == seller) {
-                return user;
-            } else {
-                res.status(400).send({
-                    message: "unauthorized action for role"
-                });
-            }
-        } else {
-            res.status(400).send({
-                message: `could not authenticate`
-            });
+            return;
         }
-    }
 
-    return undefined;
-}
+        if (data.seller != authorizeSeller) {
+            res.status(400).send({ 
+                message: "unauthorized action for role" 
+            });
+            return;
+        }
 
-exports.hash = async (clearText, res) => {
-    let cipherText;
-    await bcrypt.genSalt(10)
-    .then(async salt => {
-        await bcrypt.hash(clearText, salt)
-        .then(hash => {
-            cipherText = hash;
+        let authOk = false;
+        await data.authenticate(authBody.password)
+        .then(auth => { 
+            if (!auth) {
+                res.send({
+                    message: "could not authenticate"
+                });
+            } else {
+                authOk = true;
+            }
         })
         .catch(err => {
-            res.status(500).send({
-                message: `encryption error, make sure your request body` + 
-                `has username and password fields:\n${err}`
+            res.status(500).send({ 
+                message: `error authenticating:\n${err}` 
             });
-            return undefined;
-        });
-    })
-    .catch(err => {
-        res.status(500).send({
-            message: `error occured when generating salt:\n${err}`
-        });
-        return undefined;
+        })
+
+        if (authOk) {
+            user = data;
+        }
     });
 
-    return cipherText;
+    return user;
 }
 
 exports.coinVal = (totalCost) => {

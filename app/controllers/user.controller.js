@@ -4,16 +4,15 @@ const UserModel = db.userModel;
 const functions = require("./functions.js");
 
 exports.signUp = async (req, res) => {
-    let encryptedPassword = await functions.hash(req.body.password, res);
-    if (!encryptedPassword) { return; }
-    
     let dataBody = req.body;
     let newUser = UserModel({
         username: req.body.username,
-        password: encryptedPassword,
+        password: req.body.password,
         seller:   dataBody.seller,
         deposit:  0
     });
+    if ( ! ( await newUser.hashPassword(res) ) ) { return; }
+
     await newUser.save(newUser)
     .then(data => {
         res.json({ 
@@ -29,28 +28,30 @@ exports.signUp = async (req, res) => {
 }
 
 exports.deposit = async (req, res) => {
-    let user = await functions.authUser(req, res, false);
+    let user = await functions.authUser(req.body.auth, false, res);
     if (!user) { return; }
 
-    let dataBody = req.body.data ? req.body.data : {};
+    let dataBody = req.body.data;
+    if ( ! functions.dataBodyOk(dataBody, res) ) { return; }
+
     let type = dataBody.type;
     let quantity = dataBody.quantity;
-    if (!type || ![2, 5, 10, 20, 50, 100].includes(type)) {
+    if ( type && ! ( [2, 5, 10, 20, 50, 100].includes(type) ) ) {
         res.status(400).send({ 
             message: "please specify a valid coin type: 2, 5, 10, 20, 50, or 100" 
         });
         return;
-    } else if (!quantity || quantity < 0) {
+    } else if ( quantity && quantity < 0 ) {
         res.status(400).send({ 
-            message: "please specify coin quantity" 
+            message: "quantity cannot be less than 0" 
         });
         return;
     }
 
     let userId = user._id;
-    let newDeposit = { deposit: data.deposit + type * quantity };
+    let newDeposit = { deposit: user.deposit + type * quantity };
     await UserModel.findByIdAndUpdate(userId, newDeposit, {useFindAndModify: false})
-    .then(data => {
+    .then(_ => {
         res.send({
             message: `successfully deposited ${quantity} coins of ${type} cents to user ${userId}`
         });
@@ -63,13 +64,13 @@ exports.deposit = async (req, res) => {
 }
 
 exports.resetDeposit = async (req, res) => {
-    let user = await functions.authUser(req, res, false);
+    let user = await functions.authUser(req.body.auth, false, res);
     if (!user) { return; }
 
     let userId = user._id;
     let resetDeposit = { deposit: 0 };
     await UserModel.findByIdAndUpdate(userId, resetDeposit, {useFindAndModify: false})
-    .then(data => {
+    .then(_ => {
         res.send({
             message: `successfully reset deposit of user ${userId}`
         });
@@ -82,11 +83,11 @@ exports.resetDeposit = async (req, res) => {
 }
 
 exports.buy = async (req, res) => {
-    let user = await functions.authUser(req, res, false);
+    let user = await functions.authUser(req.body.auth, false, res);
     if (!user) { return; }
 
     let productId = req.params.id;
-    let productToBuy = await functions.findProductById(productId);
+    let productToBuy = await functions.findProductById(productId, res);
     if (!productToBuy) { return; }
 
     let productCost = productToBuy.cost;
@@ -109,38 +110,21 @@ exports.buy = async (req, res) => {
 
     //transfer funds to seller
     let sellerId = productToBuy.sellerId;
-    let seller = await functions.findUserById(sellerId);
+    let seller = await functions.findUserById(sellerId, res);
     seller.deposit += productCost;
-    await seller.save(seller)
-    .then(async _ => {
-        //update product supply
-        productToBuy.amountAvailable -= 1;
-        await productToBuy.save(productToBuy)
-        .then(async _ => {
-            //update buyer deposit
-            let change = user.deposit - productCost;
-            user.deposit = change;
-            await user.save(user)
-            .then(_ => {
-                res.send({
-                    message:`successfully bought ${productToBuy.productName} for ${productCost} cents` + 
-                    `\nchange: ${functions.coinVal(change)}`
-                });
-            })
-            .catch(err => {
-                res.status(500).send({
-                    message: `error transfering funds from buyer ${user._id}`
-                });
-            });
-        }).catch(err => {
-            res.status(500).send({
-                message: `error updating product ${productId}`
-            });
-        });
-    })
-    .catch(err => {
-        res.status(500).send({
-            message: `error transfering funds to seller ${sellerId}`
-        });
+    await seller.save(seller);
+
+    //update product supply
+    productToBuy.amountAvailable -= 1;
+    await productToBuy.save(productToBuy);
+
+    //update buyer deposit
+    let change = user.deposit - productCost;
+    user.deposit = change;
+    await user.save(user);
+
+    res.send({
+        message:`successfully bought ${productToBuy.productName} for ${productCost} cents` + 
+        `\nchange: ${functions.coinVal(change)}`
     });
 }

@@ -1,16 +1,18 @@
 const db = require("../config/db.config.js");
-const functions = require("./functions.js");
-
 const ProductModel = db.productModel;
 
+const functions = require("./functions.js");
+
 exports.addProduct = async (req, res) => {
-    let user = await functions.authUser(req, res);
+    let user = await functions.authUser(req.body.auth, true, res);
     if (!user) { return; }
 
     let sellerId = user._id;
-    let dataBody = req.body.data ? req.body.data : {};
+    let dataBody = req.body.data;
+    if (!functions.dataBodyOk(dataBody, res)) { return; }
+
     let cost = dataBody.cost;
-    if (!(cost%5==0 || cost%2==0)) {
+    if ( cost && ! (cost%5==0 || cost%2==0) ) {
         res.status(400).send({
             message: "this price cannot be reasonably funded by supported coins"
         });
@@ -50,50 +52,59 @@ exports.getProducts = async (req, res) => {
 }
 
 exports.updateProduct = async (req, res) => {
-    let user = await functions.authUser(req, res);
+    let user = await functions.authUser(req.body.auth, true, res);
     if (!user) { return; }
 
-    let dataBody = req.body.data ? req.body.data : {}; 
-    if (dataBody.sellerId) { 
+    let dataBodyToUpdate = req.body.data ? req.body.data : {}; 
+    if (!functions.dataBodyOk(dataBodyToUpdate, res)) { return; }
+
+    if (dataBodyToUpdate.sellerId) { 
         res.status(500).send({ 
             message: "cannot change seller id" 
         }); 
         return;
     }
     
-    let reqId = req.params.id;
-    await ProductModel.findOneAndUpdate({
-        _id: reqId,
+    let productId = req.params.id;
+    let userId = user._id;
+    await ProductModel.findOneAndUpdate(
+    {
+        _id: productId,
         sellerId: user._id
-    }, dataBody, {useFindAndModify: false})
-    .then(data => {
+    }, 
+    dataBodyToUpdate, 
+    {
+        useFindAndModify: false
+    }
+    ).then(data => {
         if (data) {
             res.send({ 
-                message: `successfully updated product ${reqId}` 
+                message: `successfully updated product ${productId}` 
             });
         } else {
             res.status(404).send({
-                message: `product ${reqId} could not be found for user ${user.id}`
+                message: `product ${productId} could not be found for user ${userId}`
             });
         }
     })
     .catch(err => {
         res.status(500).send({
-            message: `error updating product ${reqId}:\n${err.message}`
+            message: `error updating product ${productId}:\n${err.message}`
         });
     });
 }
 
 exports.deleteProduct = async (req, res) => {
-    let user = await functions.authUser(req, res);
-    if (!user) { return; }
+    let user = await functions.authUser(req.body.auth, true, res);
+    if ( !user ) { return; }
 
-    let reqId = req.params.id;
-    await ProductModel.findOneAndDelete({
-        _id: reqId,
+    let productId = req.params.id;
+    await ProductModel.findOneAndDelete(
+    {
+        _id: productId,
         sellerId: user._id
-    })
-    .then(data => {
+    }
+    ).then(data => {
         if (data) {
             res.send({
                 message: "successfully deleted product"
@@ -101,13 +112,13 @@ exports.deleteProduct = async (req, res) => {
         }
         else {
             res.status(404).send({
-                message: `product ${reqId} could not be found for user ${user.id}`
+                message: `product ${productId} could not be found for user ${user.id}`
             });
         }
     })
     .catch(err => {
         res.status(500).send({
-            message: `error deleting product ${reqId}:\n${err.message}`
+            message: `error deleting product ${productId}:\n${err.message}`
         });
     })
 }
