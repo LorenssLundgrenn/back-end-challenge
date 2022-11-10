@@ -61,9 +61,9 @@ exports.findProductById = async (reqId, res) => {
 }
 
 exports.authUser = async(authBody, authorizeSeller, res) => {
-    if (!authBodyOk) { return; }
+    if (!authBodyOk(authBody, res)) { return; }
 
-    let user = undefined;
+    let user;
     await UserModel.findOne({ username: authBody.username })
     .catch(err => {
         res.status(500).send({
